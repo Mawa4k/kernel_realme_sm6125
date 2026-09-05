@@ -1,4 +1,4 @@
-name: Realme Kernel + MemKernel LKM Build
+name: Realme 5i Kernel + MemKernel LKM
 
 on:
   workflow_dispatch:
@@ -9,24 +9,24 @@ jobs:
 
     steps:
 
-      # ---------------------------------------------------------
-      # 1. Checkout
-      # ---------------------------------------------------------
+      # =========================================================
+      # 1. Checkout kernel source
+      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # ---------------------------------------------------------
-      # 2. Git safe directory
-      # ---------------------------------------------------------
+      # =========================================================
+      # 2. Configure Git
+      # =========================================================
       - name: Configure Git
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # ---------------------------------------------------------
-      # 3. Build dependencies
-      # ---------------------------------------------------------
+      # =========================================================
+      # 3. Install build dependencies
+      # =========================================================
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -56,15 +56,15 @@ jobs:
             xz-utils \
             zip
 
-      # ---------------------------------------------------------
-      # 4. Install MemKernel as LKM
-      #
-      # M = Loadable Kernel Module
-      # ---------------------------------------------------------
+      # =========================================================
+      # 4. Setup Poko-Apps MemKernel
+      # =========================================================
       - name: Setup Poko-Apps MemKernel LKM
         shell: bash
         run: |
           set -eux
+
+          echo "===== Downloading MemKernel setup.sh ====="
 
           curl -fL \
             "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
@@ -72,19 +72,28 @@ jobs:
 
           chmod +x memkernel-setup.sh
 
-          # Fixed name makes artifact detection easier
+          echo "===== Running MemKernel setup ====="
+
           bash memkernel-setup.sh M memk
 
-          echo "===== MemKernel files ====="
+          echo
+          echo "===== MemKernel related files ====="
 
           find . \
             -type f \
-            \( -name "*memk*" -o -name "Kconfig" \) \
-            -print
+            \( \
+              -iname "*memk*" \
+              -o \
+              -name "Kconfig" \
+              -o \
+              -name "Makefile" \
+            \) \
+            -print \
+            | head -300
 
-      # ---------------------------------------------------------
-      # 5. Detect defconfig
-      # ---------------------------------------------------------
+      # =========================================================
+      # 5. Detect r5x defconfig
+      # =========================================================
       - name: Detect kernel defconfig
         shell: bash
         run: |
@@ -99,21 +108,23 @@ jobs:
             | sort
 
           if [ -f "arch/arm64/configs/r5x_defconfig" ]; then
-            echo "DEFCONFIG=r5x_defconfig" >> "$GITHUB_ENV"
+            DEFCONFIG="r5x_defconfig"
 
           elif [ -f "arch/arm64/configs/vendor/r5x_defconfig" ]; then
-            echo "DEFCONFIG=vendor/r5x_defconfig" >> "$GITHUB_ENV"
+            DEFCONFIG="vendor/r5x_defconfig"
 
           else
             echo "ERROR: r5x_defconfig not found."
             exit 1
           fi
 
-          echo "Using: $DEFCONFIG"
+          echo "Using defconfig: $DEFCONFIG"
 
-      # ---------------------------------------------------------
-      # 6. Generate kernel config
-      # ---------------------------------------------------------
+          echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
+
+      # =========================================================
+      # 6. Generate base kernel config
+      # =========================================================
       - name: Generate kernel configuration
         shell: bash
         run: |
@@ -121,110 +132,171 @@ jobs:
 
           mkdir -p out
 
+          echo "===== Using ====="
+          echo "$DEFCONFIG"
+
           make \
             O=out \
             ARCH=arm64 \
             "$DEFCONFIG"
 
-      # ---------------------------------------------------------
-      # 7. Force module configuration
-      # ---------------------------------------------------------
-      - name: Enable kernel module support
+      # =========================================================
+      # 7. Enable required module options
+      # =========================================================
+      - name: Configure kernel modules
         shell: bash
         run: |
           set -eux
 
-          # Enable normal LKM support
-          ./scripts/config --file out/.config \
+          echo "===== Enabling module support ====="
+
+          ./scripts/config \
+            --file out/.config \
             --enable CONFIG_MODULES \
             --enable CONFIG_MODULE_FORCE_LOAD \
             --enable CONFIG_MODULE_UNLOAD \
             --enable CONFIG_MODULE_FORCE_UNLOAD
 
-          # Disable module signature requirements
-          ./scripts/config --file out/.config \
+          echo
+          echo "===== Disabling module signatures ====="
+
+          ./scripts/config \
+            --file out/.config \
             --disable CONFIG_MODULE_SIG \
             --disable CONFIG_MODULE_SIG_FORCE \
             --disable CONFIG_MODULE_SIG_ALL
 
-          # Recalculate dependencies
+          echo
+          echo "===== Running olddefconfig ====="
+
           make \
             O=out \
             ARCH=arm64 \
             olddefconfig
 
-          echo
-          echo "===== MODULE CONFIG ====="
+      # =========================================================
+      # 8. Verify required CONFIG values
+      # =========================================================
+      - name: Verify module configuration
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=========================================="
+          echo "       FINAL MODULE CONFIGURATION"
+          echo "=========================================="
 
           grep -E \
             '^CONFIG_(MODULES|MODULE_FORCE_LOAD|MODULE_UNLOAD|MODULE_FORCE_UNLOAD|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL)=' \
             out/.config \
             || true
 
-      # ---------------------------------------------------------
-      # 8. Detect MemKernel Kconfig symbol
-      # ---------------------------------------------------------
-      - name: Detect MemKernel config symbol
+          echo
+          echo "===== Required values ====="
+
+          grep -q '^CONFIG_MODULES=y$' out/.config
+          grep -q '^CONFIG_MODULE_FORCE_LOAD=y$' out/.config
+          grep -q '^CONFIG_MODULE_UNLOAD=y$' out/.config
+          grep -q '^CONFIG_MODULE_FORCE_UNLOAD=y$' out/.config
+
+          if grep -q '^CONFIG_MODULE_SIG=y$' out/.config; then
+            echo "ERROR: CONFIG_MODULE_SIG is enabled"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_MODULE_SIG_FORCE=y$' out/.config; then
+            echo "ERROR: CONFIG_MODULE_SIG_FORCE is enabled"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_MODULE_SIG_ALL=y$' out/.config; then
+            echo "ERROR: CONFIG_MODULE_SIG_ALL is enabled"
+            exit 1
+          fi
+
+          echo
+          echo "Module configuration OK."
+
+      # =========================================================
+      # 9. Inspect MemKernel Kconfig
+      # =========================================================
+      - name: Inspect MemKernel Kconfig
         shell: bash
         run: |
           set -eux
 
-          echo "===== Searching MemKernel Kconfig ====="
-
-          grep -RniE \
-            'config[[:space:]]+[A-Za-z0-9_]*(MEMK|memk)[A-Za-z0-9_]*' \
-            . \
-            --include='Kconfig*' \
-            || true
-
-          echo
-          echo "===== Searching MemKernel Makefile ====="
+          echo "=========================================="
+          echo "       MEMKERNEL KCONFIG SEARCH"
+          echo "=========================================="
 
           grep -RniE \
             '(memk|MEMK)' \
             . \
+            --include='Kconfig*' \
             --include='Makefile' \
             --include='Kbuild' \
             || true
 
-      # ---------------------------------------------------------
-      # 9. Automatically force MemKernel symbol = m
-      #
-      # Finds a CONFIG symbol related to memk from Kconfig,
-      # then changes it to module mode.
-      # ---------------------------------------------------------
-      - name: Enable MemKernel as module
+      # =========================================================
+      # 10. Find MemKernel CONFIG symbol
+      # =========================================================
+      - name: Detect MemKernel CONFIG symbol
         shell: bash
         run: |
           set -eux
 
+          echo "=========================================="
+          echo "     DETECTING MEMKERNEL CONFIG SYMBOL"
+          echo "=========================================="
+
           SYMBOL="$(
             grep -RhoE \
-              'config[[:space:]]+[A-Za-z0-9_]*(MEMK|memk)[A-Za-z0-9_]*' \
+              '^[[:space:]]*config[[:space:]]+[A-Za-z0-9_]*(MEMK|memk)[A-Za-z0-9_]*' \
               . \
               --include='Kconfig*' \
-            | awk '{print $2}' \
+            | sed -E 's/^[[:space:]]*config[[:space:]]+//' \
             | sort -u \
             | head -n 1
           )"
 
           if [ -z "$SYMBOL" ]; then
-            echo "ERROR: Could not automatically detect MemKernel CONFIG symbol."
+            echo "ERROR: MemKernel CONFIG symbol was not detected."
             echo
             echo "===== Kconfig references ====="
-            grep -RniE '(memk|MEMK)' . \
+
+            grep -RniE \
+              '(memk|MEMK)' \
+              . \
               --include='Kconfig*' \
               --include='Makefile' \
               --include='Kbuild' \
               || true
+
             exit 1
           fi
 
-          echo "Detected MemKernel CONFIG symbol: $SYMBOL"
+          echo "Detected symbol:"
+          echo "$SYMBOL"
+
+          echo "MEMK_SYMBOL=$SYMBOL" >> "$GITHUB_ENV"
+
+      # =========================================================
+      # 11. Force MemKernel to module (=m)
+      # =========================================================
+      - name: Enable MemKernel as LKM
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=========================================="
+          echo "       ENABLING MEMKERNEL AS MODULE"
+          echo "=========================================="
+
+          echo "CONFIG symbol: $MEMK_SYMBOL"
 
           ./scripts/config \
             --file out/.config \
-            --module "$SYMBOL"
+            --module "$MEMK_SYMBOL"
 
           make \
             O=out \
@@ -232,36 +304,50 @@ jobs:
             olddefconfig
 
           echo
-          echo "===== MemKernel CONFIG RESULT ====="
+          echo "===== MemKernel config ====="
 
-          grep -E \
-            "^${SYMBOL}=" \
+          grep \
+            "^${MEMK_SYMBOL}=" \
             out/.config
 
-      # ---------------------------------------------------------
-      # 10. Verify final configuration
-      # ---------------------------------------------------------
-      - name: Verify final kernel configuration
+          echo
+          echo "===== Module options currently enabled ====="
+
+          grep '=m$' out/.config \
+            | head -100 \
+            || true
+
+      # =========================================================
+      # 12. Verify MemKernel is really =m
+      # =========================================================
+      - name: Verify MemKernel module configuration
         shell: bash
         run: |
           set -eux
 
-          echo "===== FINAL CONFIG ====="
+          echo "Checking:"
+          echo "$MEMK_SYMBOL"
 
-          grep -E \
-            '^CONFIG_(MODULES|MODULE_FORCE_LOAD|MODULE_UNLOAD|MODULE_FORCE_UNLOAD|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL)=' \
-            out/.config \
-            || true
+          if ! grep -q "^${MEMK_SYMBOL}=m$" out/.config; then
+            echo
+            echo "ERROR: MemKernel is NOT configured as =m"
+            echo
+            grep \
+              "^${MEMK_SYMBOL}=" \
+              out/.config \
+              || true
+
+            exit 1
+          fi
 
           echo
-          echo "===== ALL CONFIG OPTIONS SET TO m ====="
+          echo "SUCCESS:"
+          echo "${MEMK_SYMBOL}=m"
 
-          grep '=m$' out/.config | head -100 || true
-
-      # ---------------------------------------------------------
-      # 11. Build kernel
-      # ---------------------------------------------------------
-      - name: Build kernel
+      # =========================================================
+      # 13. Build kernel
+      # =========================================================
+      - name: Build Android kernel
         shell: bash
         run: |
           set -eux
@@ -269,7 +355,9 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
 
-          export PATH="/usr/lib/llvm-14/bin:$PATH"
+          echo "=========================================="
+          echo "             BUILDING KERNEL"
+          echo "=========================================="
 
           make \
             O=out \
@@ -279,13 +367,17 @@ jobs:
             -j"$(nproc)" \
             2>&1 | tee kernel-build.log
 
-      # ---------------------------------------------------------
-      # 12. Explicitly build modules
-      # ---------------------------------------------------------
+      # =========================================================
+      # 14. Build all kernel modules
+      # =========================================================
       - name: Build kernel modules
         shell: bash
         run: |
           set -eux
+
+          echo "=========================================="
+          echo "             BUILDING MODULES"
+          echo "=========================================="
 
           make \
             O=out \
@@ -296,23 +388,28 @@ jobs:
             -j"$(nproc)" \
             2>&1 | tee modules-build.log
 
-      # ---------------------------------------------------------
-      # 13. Check MODPOST
-      # ---------------------------------------------------------
-      - name: Verify modules
+      # =========================================================
+      # 15. Verify MODPOST and .ko
+      # =========================================================
+      - name: Verify generated KO modules
         shell: bash
         run: |
           set -eux
 
-          echo "===== MODPOST ====="
+          echo "=========================================="
+          echo "                MODPOST"
+          echo "=========================================="
 
           grep -E \
-            'MODPOST|Building modules' \
+            'Building modules|MODPOST' \
+            kernel-build.log \
             modules-build.log \
             || true
 
           echo
-          echo "===== KO FILES ====="
+          echo "=========================================="
+          echo "              GENERATED .KO"
+          echo "=========================================="
 
           find out \
             -type f \
@@ -323,33 +420,85 @@ jobs:
           KO_COUNT="$(find out -type f -name '*.ko' | wc -l)"
 
           echo
-          echo "KO COUNT: $KO_COUNT"
+          echo "Total .ko files: $KO_COUNT"
 
           if [ "$KO_COUNT" -eq 0 ]; then
             echo
-            echo "ERROR: No .ko files were generated."
+            echo "ERROR: NO .ko MODULE WAS GENERATED."
             echo
-            echo "===== CONFIG MODULES ====="
-            grep '^CONFIG_MODULES=' out/.config || true
+            echo "===== MemKernel CONFIG ====="
+
+            grep \
+              "^${MEMK_SYMBOL}=" \
+              out/.config \
+              || true
+
             echo
-            echo "===== CONFIG =m ====="
-            grep '=m$' out/.config | head -100 || true
+            echo "===== All =m CONFIGS ====="
+
+            grep '=m$' out/.config \
+              | head -200 \
+              || true
+
+            echo
+            echo "===== Last MODPOST lines ====="
+
+            grep -E \
+              'MODPOST|ERROR|warning' \
+              kernel-build.log \
+              modules-build.log \
+              | tail -100 \
+              || true
+
             exit 1
           fi
 
-      # ---------------------------------------------------------
-      # 14. Collect build output
-      # ---------------------------------------------------------
-      - name: Collect kernel and modules
+          echo
+          echo "SUCCESS: .ko module(s) generated."
+
+      # =========================================================
+      # 16. Show module information
+      # =========================================================
+      - name: Show module information
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=========================================="
+          echo "             MODULE INFORMATION"
+          echo "=========================================="
+
+          for KO in $(find out -type f -name "*.ko"); do
+            echo
+            echo "------------------------------------------"
+            echo "MODULE: $KO"
+            echo "------------------------------------------"
+
+            file "$KO" || true
+
+            if command -v modinfo >/dev/null 2>&1; then
+              modinfo "$KO" || true
+            fi
+          done
+
+      # =========================================================
+      # 17. Collect kernel + modules
+      # =========================================================
+      - name: Collect build artifacts
         shell: bash
         run: |
           set -eux
 
           rm -rf build_output
-          mkdir -p build_output/modules
-          mkdir -p build_output/kernel
 
-          # Kernel images
+          mkdir -p \
+            build_output/kernel \
+            build_output/modules
+
+          echo "=========================================="
+          echo "          COLLECTING KERNEL"
+          echo "=========================================="
+
           find out/arch/arm64/boot \
             -maxdepth 1 \
             -type f \
@@ -364,31 +513,52 @@ jobs:
             \) \
             -exec cp -v {} build_output/kernel/ \;
 
-          # All .ko files
+          echo
+          echo "=========================================="
+          echo "          COLLECTING MODULES"
+          echo "=========================================="
+
           find out \
             -type f \
             -name "*.ko" \
             -exec cp -v {} build_output/modules/ \;
 
-          # Config
-          cp out/.config build_output/kernel/config
+          echo
+          echo "=========================================="
+          echo "          COLLECTING CONFIG"
+          echo "=========================================="
 
-          # Logs
-          cp kernel-build.log build_output/
-          cp modules-build.log build_output/
+          cp \
+            out/.config \
+            build_output/kernel/config
 
           echo
-          echo "===== FINAL ARTIFACTS ====="
+          echo "=========================================="
+          echo "             COLLECTING LOGS"
+          echo "=========================================="
+
+          cp \
+            kernel-build.log \
+            build_output/
+
+          cp \
+            modules-build.log \
+            build_output/
+
+          echo
+          echo "=========================================="
+          echo "           FINAL BUILD OUTPUT"
+          echo "=========================================="
 
           find build_output \
             -type f \
             -printf '%p\n' \
             | sort
 
-      # ---------------------------------------------------------
-      # 15. Upload artifacts
-      # ---------------------------------------------------------
-      - name: Upload Kernel + Modules
+      # =========================================================
+      # 18. Upload artifacts
+      # =========================================================
+      - name: Upload Kernel and MemKernel Modules
         uses: actions/upload-artifact@v4
         with:
           name: Realme5i-Kernel-MemKernel-LKM
