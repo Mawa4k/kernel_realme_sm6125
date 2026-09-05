@@ -18,7 +18,7 @@ jobs:
       uses: lemniskett/android-kernel-actions@master
       id: build
       env:
-        NAME: Loganysl
+        NAME: Realme5i-Kernel
       with:
         arch: arm64
         compiler: Clang 21.1.8
