@@ -44,7 +44,7 @@ jobs:
           NAME: Realme5i-Kernel
         with:
           arch: arm64
-          compiler: Clang 21.1.8
+          compiler: clang
           defconfig: r5x_defconfig
           image: Image.gz-dtb
 
@@ -52,6 +52,7 @@ jobs:
         run: |
           echo "=== All memkernel modules ==="
           find . -type f -name "memkernel.ko" -print || true
+
           echo "=== All kernel modules ==="
           find out -type f -name "*.ko" -print 2>/dev/null || true
 
