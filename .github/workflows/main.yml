@@ -1,4 +1,3 @@
-```yaml
 name: Kernel Build
 
 on:
@@ -6,168 +5,61 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
       - name: Download MemKernel setup script
-        shell: bash
         run: |
           set -e
-
           curl -fL \
             "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
             -o setup.sh
-
+          echo "=== Checking setup.sh ==="
+          head -30 setup.sh
+          echo "=== Checking shell syntax ==="
           bash -n setup.sh
 
       - name: Set up MemKernel as module
-        shell: bash
         run: |
           set -e
           bash setup.sh M
 
-      - name: Check MemKernel
-        shell: bash
+      - name: Check MemKernel setup
         run: |
-          echo "=== MemKernel directory ==="
-          find . -type d -iname "*memkernel*" -print
+          echo "=== Searching MemKernel files ==="
+          find . -type f \( \
+            -name "memkernel.ko" -o \
+            -name "*memkernel*.ko" \
+          \) -print || true
+          echo "=== MemKernel directories ==="
+          find . -type d -iname "*memkernel*" -print || true
 
-          echo "=== MemKernel files ==="
-          find . -type f \
-            \( -iname "*memkernel*" -o -iname "*memk*" \) \
-            -print || true
+      - name: Android kernel build
+        uses: lemniskett/android-kernel-actions@master
+        id: build
+        env:
+          NAME: Realme5i-Kernel
+        with:
+          arch: arm64
+          compiler: Clang 21.1.8
+          defconfig: r5x_defconfig
+          image: Image.gz-dtb
 
-          echo "=== Kernel Makefile ==="
-          grep -n "memkernel" drivers/Makefile 2>/dev/null || true
-
-          echo "=== Kernel Kconfig ==="
-          grep -n "memkernel" drivers/Kconfig 2>/dev/null || true
-
-      - name: Install build dependencies
-        shell: bash
+      - name: Find built kernel modules
         run: |
-          set -e
+          echo "=== All memkernel modules ==="
+          find . -type f -name "memkernel.ko" -print || true
+          echo "=== All kernel modules ==="
+          find out -type f -name "*.ko" -print 2>/dev/null || true
 
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            bc \
-            bison \
-            flex \
-            build-essential \
-            libssl-dev \
-            libelf-dev \
-            libncurses-dev \
-            python3 \
-            cpio \
-            rsync \
-            unzip \
-            zip \
-            device-tree-compiler
-
-      - name: Install Clang
-        shell: bash
-        run: |
-          set -e
-
-          sudo apt-get install -y clang llvm lld
-
-          echo "=== Clang version ==="
-          clang --version
-
-          echo "=== LLD version ==="
-          ld.lld --version
-
-      - name: Configure kernel
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p out
-
-          echo "=== Checking defconfig ==="
-
-          if [ -f arch/arm64/configs/r5x_defconfig ]; then
-            echo "Found r5x_defconfig"
-          else
-            echo "ERROR: r5x_defconfig not found"
-            find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" -print
-            exit 1
-          fi
-
-          make O=out ARCH=arm64 r5x_defconfig
-
-          echo "=== Module configuration ==="
-          grep -E \
-            'CONFIG_MODULES=|CONFIG_MODULE_UNLOAD=|CONFIG_MODULE_FORCE_LOAD=|CONFIG_MODULE_FORCE_UNLOAD=|CONFIG_MODULE_SIG=' \
-            out/.config || true
-
-      - name: Build kernel
-        shell: bash
-        run: |
-          set -e
-
-          make \
-            O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            -j"$(nproc)" \
-            Image.gz-dtb
-
-      - name: Build modules
-        shell: bash
-        run: |
-          set -e
-
-          make \
-            O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            -j"$(nproc)" \
-            modules
-
-      - name: Find kernel and modules
-        shell: bash
-        run: |
-          echo "=== Kernel images ==="
-          find out -type f \
-            \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" \) \
-            -print
-
-          echo "=== Kernel modules ==="
-          find out -type f -name "*.ko" -print | sort
-
-          echo "=== MemKernel modules ==="
-          find out -type f -name "*.ko" \
-            \( -iname "*memk*" -o -iname "*memkernel*" \) \
-            -print || true
-
-      - name: Prepare artifacts
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p artifacts
-
-          find out -type f \
-            \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" \) \
-            -exec cp {} artifacts/ \;
-
-          find out -type f -name "*.ko" \
-            -exec cp --parents {} artifacts/ \;
-
-          echo "=== Artifacts ==="
-          find artifacts -type f -print
-
-      - name: Upload Kernel and Modules
+      - name: Upload Kernel and Module
         uses: actions/upload-artifact@v4
         with:
           name: Realme5i-kernel-build
-          path: artifacts/
-          if-no-files-found: error
-```
+          path: |
+            ${{ steps.build.outputs.outfile }}
+            ./out/drivers/memkernel/memkernel.ko
+          if-no-files-found: warn
