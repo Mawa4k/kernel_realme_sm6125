@@ -24,19 +24,16 @@ jobs:
             -o setup.sh
           bash setup.sh M
 
-      - name: Download ZyC Clang Toolchain
+      - name: Download Clang Toolchain
         run: |
-          mkdir clang
-          wget -q https://github.com/ZyC-s/Clang/releases/download/19.0.0-20240409/Clang-19.0.0.tar.gz -O clang.tar.gz
-          tar -xf clang.tar.gz -C clang
-          rm clang.tar.gz
+          git clone --depth=1 https://gitlab.com/LineageOS/snapshots/android_prebuilts_clang_kernel_linux-x86_clang-r416158c.git clang
 
       - name: Build Android Kernel
         run: |
           export PATH="$(pwd)/clang/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
-          
+
           make O=out r5x_defconfig
           make -j$(nproc --all) \
             O=out \
