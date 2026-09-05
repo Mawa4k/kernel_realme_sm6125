@@ -11,133 +11,104 @@ jobs:
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Show kernel source information
+      - name: Download MemKernel setup script
+        shell: bash
         run: |
-          set -eux
+          set -e
 
-          echo "=== Branch ==="
-          git branch --show-current
+          curl -fL \
+            "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
+            -o setup.sh
 
-          echo "=== Commit ==="
-          git log -1 --oneline
+          bash -n setup.sh
+
+      - name: Set up MemKernel as module
+        shell: bash
+        run: |
+          set -e
+          bash setup.sh M
+
+      - name: Check MemKernel
+        shell: bash
+        run: |
+          echo "=== MemKernel directory ==="
+          find . -type d -iname "*memkernel*" -print
+
+          echo "=== MemKernel files ==="
+          find . -type f \
+            \( -iname "*memkernel*" -o -iname "*memk*" \) \
+            -print || true
 
           echo "=== Kernel Makefile ==="
-          head -20 Makefile
+          grep -n "memkernel" drivers/Makefile 2>/dev/null || true
 
-          echo "=== Defconfigs ==="
-          find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" -print | sort
+          echo "=== Kernel Kconfig ==="
+          grep -n "memkernel" drivers/Kconfig 2>/dev/null || true
 
       - name: Install build dependencies
+        shell: bash
         run: |
-          set -eux
+          set -e
 
           sudo apt-get update
 
           sudo apt-get install -y \
             bc \
             bison \
-            build-essential \
             flex \
-            git \
+            build-essential \
             libssl-dev \
             libelf-dev \
             libncurses-dev \
             python3 \
-            python3-pip \
             cpio \
             rsync \
             unzip \
             zip \
-            wget \
-            curl \
             device-tree-compiler
 
-      - name: Install LLVM / Clang
+      - name: Install Clang
+        shell: bash
         run: |
-          set -eux
+          set -e
 
-          sudo apt-get update
-          sudo apt-get install -y clang lld llvm
+          sudo apt-get install -y clang llvm lld
 
-          echo "=== Clang ==="
+          echo "=== Clang version ==="
           clang --version
 
-          echo "=== LLVM ==="
-          llvm-config --version
-
-          echo "=== LLD ==="
+          echo "=== LLD version ==="
           ld.lld --version
 
-      - name: Download MemKernel setup script
+      - name: Configure kernel
+        shell: bash
         run: |
-          set -eux
-
-          curl -fL \
-            "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
-            -o setup.sh
-
-          echo "=== setup.sh ==="
-          head -40 setup.sh
-
-          echo "=== Shell syntax ==="
-          bash -n setup.sh
-
-      - name: Set up MemKernel as module
-        run: |
-          set -eux
-
-          bash setup.sh M
-
-      - name: Verify MemKernel integration
-        run: |
-          set -eux
-
-          echo "=== MemKernel directory ==="
-          find . -maxdepth 2 -type d -iname "*memkernel*" -print
-
-          echo "=== MemKernel references ==="
-          grep -Rni "memkernel" drivers/Kconfig drivers/Makefile 2>/dev/null || true
-
-          echo "=== MemKernel source ==="
-          find MemKernel -maxdepth 2 -type f -print 2>/dev/null | head -100
-
-      - name: Prepare kernel configuration
-        run: |
-          set -eux
+          set -e
 
           mkdir -p out
 
-          echo "=== Checking r5x_defconfig ==="
+          echo "=== Checking defconfig ==="
 
-          if [ -f "arch/arm64/configs/r5x_defconfig" ]; then
-            echo "Found arch/arm64/configs/r5x_defconfig"
-          elif [ -f "vendor/r5x_defconfig" ]; then
-            echo "Found vendor/r5x_defconfig"
-            cp vendor/r5x_defconfig arch/arm64/configs/r5x_defconfig
+          if [ -f arch/arm64/configs/r5x_defconfig ]; then
+            echo "Found r5x_defconfig"
           else
             echo "ERROR: r5x_defconfig not found"
-            echo "Available defconfigs:"
-            find arch/arm64/configs vendor -type f -name "*defconfig" 2>/dev/null | sort
+            find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" -print
             exit 1
           fi
 
           make O=out ARCH=arm64 r5x_defconfig
 
-          echo "=== Important module configuration ==="
+          echo "=== Module configuration ==="
           grep -E \
             'CONFIG_MODULES=|CONFIG_MODULE_UNLOAD=|CONFIG_MODULE_FORCE_LOAD=|CONFIG_MODULE_FORCE_UNLOAD=|CONFIG_MODULE_SIG=' \
             out/.config || true
 
       - name: Build kernel
+        shell: bash
         run: |
-          set -eux
-
-          export ARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
+          set -e
 
           make \
             O=out \
@@ -147,13 +118,10 @@ jobs:
             -j"$(nproc)" \
             Image.gz-dtb
 
-      - name: Build kernel modules
+      - name: Build modules
+        shell: bash
         run: |
-          set -eux
-
-          export ARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
+          set -e
 
           make \
             O=out \
@@ -163,66 +131,38 @@ jobs:
             -j"$(nproc)" \
             modules
 
-      - name: Find kernel image
+      - name: Find kernel and modules
+        shell: bash
         run: |
-          set -eux
-
           echo "=== Kernel images ==="
           find out -type f \
             \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" \) \
             -print
 
-          echo "=== Image sizes ==="
-          find out -type f \
-            \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" \) \
-            -exec ls -lh {} \;
-
-      - name: Find all kernel modules
-        run: |
-          set -eux
-
-          echo "=== All .ko files ==="
+          echo "=== Kernel modules ==="
           find out -type f -name "*.ko" -print | sort
 
-          echo "=== MemKernel-related modules ==="
-          find out -type f -name "*.ko" \
-            \( -iname "*memk*" -o -iname "*memkernel*" \) \
-            -print | sort || true
-
-      - name: Show MemKernel module information
-        run: |
-          set -eux
-
           echo "=== MemKernel modules ==="
-
           find out -type f -name "*.ko" \
             \( -iname "*memk*" -o -iname "*memkernel*" \) \
-            -exec sh -c '
-              echo "----------------------------------------"
-              echo "FILE: $1"
-              file "$1"
-              modinfo "$1" 2>/dev/null || true
-            ' _ {} \; || true
+            -print || true
 
       - name: Prepare artifacts
+        shell: bash
         run: |
-          set -eux
+          set -e
 
           mkdir -p artifacts
 
-          echo "=== Copying kernel image ==="
-
           find out -type f \
-            \( -name "Image.gz-dtb" -o -name "Image.gz" -o -name "Image" \) \
-            -exec cp {} artifacts/ \; 2>/dev/null || true
-
-          echo "=== Copying all modules ==="
+            \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" \) \
+            -exec cp {} artifacts/ \;
 
           find out -type f -name "*.ko" \
-            -exec cp --parents {} artifacts/ \; 2>/dev/null || true
+            -exec cp --parents {} artifacts/ \;
 
-          echo "=== Artifact contents ==="
-          find artifacts -type f -print | sort
+          echo "=== Artifacts ==="
+          find artifacts -type f -print
 
       - name: Upload Kernel and Modules
         uses: actions/upload-artifact@v4
@@ -230,5 +170,4 @@ jobs:
           name: Realme5i-kernel-build
           path: artifacts/
           if-no-files-found: error
-          compression-level: 6
 ```
