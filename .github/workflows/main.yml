@@ -1,3 +1,4 @@
+```yaml
 name: Kernel Build
 
 on:
@@ -6,29 +7,66 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
 
-    - name: Set up MemKernel as a module (M-OUT) with specified name
-      run: |
-        curl -LSs "https://raw.githubusercontent.com/aiichi/MemKernel/main/kernel/setup.sh" | bash -s M dogi
+      - name: Download MemKernel setup script
+        run: |
+          set -e
 
-    - name: Android kernel build
-      uses: lemniskett/android-kernel-actions@master
-      id: build
-      env:
-        NAME: Realme5i-Kernel
-      with:
-        arch: arm64
-        compiler: Clang 21.1.8
-        defconfig: r5x_defconfig
-        image: Image.gz-dtb
+          curl -fL \
+            "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
+            -o setup.sh
 
-    - name: Upload Kernel and Module
-      uses: actions/upload-artifact@v4
-      with:
-        name: module
-        path: |
-          ${{ steps.build.outputs.outfile }}
-          ./out/drivers/memkernel/memkernel.ko
+          echo "=== Checking setup.sh ==="
+          head -30 setup.sh
+
+          echo "=== Checking shell syntax ==="
+          bash -n setup.sh
+
+      - name: Set up MemKernel as module
+        run: |
+          set -e
+          bash setup.sh M
+
+      - name: Check MemKernel setup
+        run: |
+          echo "=== Searching MemKernel files ==="
+          find . -type f \( \
+            -name "memkernel.ko" -o \
+            -name "*memkernel*.ko" \
+          \) -print || true
+
+          echo "=== MemKernel directories ==="
+          find . -type d -iname "*memkernel*" -print || true
+
+      - name: Android kernel build
+        uses: lemniskett/android-kernel-actions@master
+        id: build
+        env:
+          NAME: Realme5i-Kernel
+        with:
+          arch: arm64
+          compiler: Clang 21.1.8
+          defconfig: r5x_defconfig
+          image: Image.gz-dtb
+
+      - name: Find built kernel modules
+        run: |
+          echo "=== All memkernel modules ==="
+          find . -type f -name "memkernel.ko" -print || true
+
+          echo "=== All kernel modules ==="
+          find out -type f -name "*.ko" -print 2>/dev/null || true
+
+      - name: Upload Kernel and Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: Realme5i-kernel-build
+          path: |
+            ${{ steps.build.outputs.outfile }}
+            ./out/drivers/memkernel/memkernel.ko
+          if-no-files-found: warn
+```
