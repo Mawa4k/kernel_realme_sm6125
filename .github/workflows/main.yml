@@ -44,7 +44,7 @@ jobs:
           NAME: Realme5i-Kernel
         with:
           arch: arm64
-          compiler: clang
+          compiler: azure-clang
           defconfig: r5x_defconfig
           image: Image.gz-dtb
 
