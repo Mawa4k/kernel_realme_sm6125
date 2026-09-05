@@ -1,4 +1,4 @@
-name: Kernel Build
+name: Realme Kernel + MemKernel LKM Build
 
 on:
   workflow_dispatch:
@@ -9,244 +9,267 @@ jobs:
 
     steps:
 
-      # ==========================================
+      # ---------------------------------------------------------
       # 1. Checkout
-      # ==========================================
+      # ---------------------------------------------------------
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # ==========================================
-      # 2. Fix Git safe directory
-      # ==========================================
+      # ---------------------------------------------------------
+      # 2. Git safe directory
+      # ---------------------------------------------------------
       - name: Configure Git
         run: |
-          set -eux
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          echo "=== Git ==="
-          git rev-parse --short HEAD
-          git branch --show-current
-
-      # ==========================================
-      # 3. Install build dependencies
-      # ==========================================
+      # ---------------------------------------------------------
+      # 3. Build dependencies
+      # ---------------------------------------------------------
       - name: Install build dependencies
         run: |
-          set -eux
-
           sudo apt-get update
 
           sudo apt-get install -y \
-            build-essential \
             bc \
             bison \
+            build-essential \
+            ccache \
+            clang \
             flex \
-            libssl-dev \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf \
+            git \
+            libelf-dev \
             libncurses5-dev \
             libncursesw5-dev \
-            libelf-dev \
-            libdw-dev \
-            ccache \
-            zip \
-            unzip \
-            git \
-            wget \
-            curl \
-            rsync \
-            python3 \
-            clang \
-            llvm \
+            libssl-dev \
             lld \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf
+            llvm \
+            lzop \
+            python3 \
+            python3-pip \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zip
 
-      # ==========================================
-      # 4. Show toolchain
-      # ==========================================
-      - name: Check toolchain
-        run: |
-          set -eux
-
-          echo "=== Clang ==="
-          clang --version
-
-          echo
-          echo "=== LLVM ==="
-          llvm-config --version
-
-          echo
-          echo "=== LLD ==="
-          ld.lld --version
-
-          echo
-          echo "=== AArch64 GCC ==="
-          aarch64-linux-gnu-gcc --version
-
-      # ==========================================
-      # 5. Download MemKernel
-      # ==========================================
-      - name: Download MemKernel setup script
+      # ---------------------------------------------------------
+      # 4. Install MemKernel as LKM
+      #
+      # M = Loadable Kernel Module
+      # ---------------------------------------------------------
+      - name: Setup Poko-Apps MemKernel LKM
+        shell: bash
         run: |
           set -eux
 
           curl -fL \
             "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
-            -o setup.sh
+            -o memkernel-setup.sh
 
-          echo "=== Checking setup.sh ==="
-          bash -n setup.sh
+          chmod +x memkernel-setup.sh
 
-      # ==========================================
-      # 6. Setup MemKernel
-      # ==========================================
-      - name: Set up MemKernel
-        run: |
-          set -eux
+          # Fixed name makes artifact detection easier
+          bash memkernel-setup.sh M memk
 
-          bash setup.sh M
+          echo "===== MemKernel files ====="
 
-      # ==========================================
-      # 7. Verify MemKernel
-      # ==========================================
-      - name: Verify MemKernel
-        run: |
-          set -eux
-
-          echo "=== MemKernel directories ==="
-          find . \
-            -type d \
-            -iname '*memkernel*' \
-            -print || true
-
-          echo
-          echo "=== MemKernel files ==="
           find . \
             -type f \
-            \( \
-              -iname '*memkernel*' \
-              -o -iname '*memk*' \
-            \) \
-            -print | head -100 || true
+            \( -name "*memk*" -o -name "Kconfig" \) \
+            -print
 
-          echo
-          echo "=== Git changes ==="
-          git status --short || true
-
-      # ==========================================
-      # 8. Check defconfig
-      # ==========================================
-      - name: Check kernel defconfig
+      # ---------------------------------------------------------
+      # 5. Detect defconfig
+      # ---------------------------------------------------------
+      - name: Detect kernel defconfig
+        shell: bash
         run: |
           set -eux
 
-          echo "=== Available ARM64 defconfigs ==="
+          echo "===== Available ARM64 defconfigs ====="
 
           find arch/arm64/configs \
             -maxdepth 1 \
             -type f \
-            -name '*defconfig' \
             -printf '%f\n' \
             | sort
 
-          echo
-          echo "=== Checking r5x_defconfig ==="
+          if [ -f "arch/arm64/configs/r5x_defconfig" ]; then
+            echo "DEFCONFIG=r5x_defconfig" >> "$GITHUB_ENV"
 
-          if [ ! -f "arch/arm64/configs/r5x_defconfig" ]; then
-            echo "ERROR: r5x_defconfig does not exist."
-            echo
-            echo "Available defconfigs:"
-            find arch/arm64/configs \
-              -type f \
-              -name '*defconfig' \
-              -print \
-              | sort
+          elif [ -f "arch/arm64/configs/vendor/r5x_defconfig" ]; then
+            echo "DEFCONFIG=vendor/r5x_defconfig" >> "$GITHUB_ENV"
+
+          else
+            echo "ERROR: r5x_defconfig not found."
             exit 1
           fi
 
-          echo "r5x_defconfig found."
+          echo "Using: $DEFCONFIG"
 
-      # ==========================================
-      # 9. Prepare build directory
-      # ==========================================
-      - name: Prepare build directory
+      # ---------------------------------------------------------
+      # 6. Generate kernel config
+      # ---------------------------------------------------------
+      - name: Generate kernel configuration
+        shell: bash
         run: |
           set -eux
 
-          rm -rf out
           mkdir -p out
-
-      # ==========================================
-      # 10. Generate kernel config
-      # ==========================================
-      - name: Generate kernel config
-        run: |
-          set -eux
 
           make \
             O=out \
             ARCH=arm64 \
-            r5x_defconfig
+            "$DEFCONFIG"
 
-      # ==========================================
-      # 11. Enable module support
-      # ==========================================
-      - name: Configure modules
+      # ---------------------------------------------------------
+      # 7. Force module configuration
+      # ---------------------------------------------------------
+      - name: Enable kernel module support
+        shell: bash
         run: |
           set -eux
 
-          if [ -x "./scripts/config" ]; then
+          # Enable normal LKM support
+          ./scripts/config --file out/.config \
+            --enable CONFIG_MODULES \
+            --enable CONFIG_MODULE_FORCE_LOAD \
+            --enable CONFIG_MODULE_UNLOAD \
+            --enable CONFIG_MODULE_FORCE_UNLOAD
 
-            ./scripts/config \
-              --file out/.config \
-              -e CONFIG_MODULES \
-              -e CONFIG_MODULE_UNLOAD \
-              -e CONFIG_MODULE_FORCE_LOAD \
-              -e CONFIG_MODULE_FORCE_UNLOAD \
-              -d CONFIG_MODULE_SIG \
-              -d CONFIG_MODULE_SIG_FORCE \
-              -d CONFIG_MODULE_SIG_ALL
+          # Disable module signature requirements
+          ./scripts/config --file out/.config \
+            --disable CONFIG_MODULE_SIG \
+            --disable CONFIG_MODULE_SIG_FORCE \
+            --disable CONFIG_MODULE_SIG_ALL
 
-            make \
-              O=out \
-              ARCH=arm64 \
-              olddefconfig
-
-          fi
+          # Recalculate dependencies
+          make \
+            O=out \
+            ARCH=arm64 \
+            olddefconfig
 
           echo
-          echo "=== Module configuration ==="
+          echo "===== MODULE CONFIG ====="
 
           grep -E \
-            'CONFIG_MODULES=|CONFIG_MODULE_UNLOAD=|CONFIG_MODULE_FORCE|CONFIG_MODULE_SIG' \
-            out/.config || true
+            '^CONFIG_(MODULES|MODULE_FORCE_LOAD|MODULE_UNLOAD|MODULE_FORCE_UNLOAD|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL)=' \
+            out/.config \
+            || true
 
-      # ==========================================
-      # 12. Build kernel
-      # ==========================================
-      - name: Build Android Kernel
+      # ---------------------------------------------------------
+      # 8. Detect MemKernel Kconfig symbol
+      # ---------------------------------------------------------
+      - name: Detect MemKernel config symbol
+        shell: bash
+        run: |
+          set -eux
+
+          echo "===== Searching MemKernel Kconfig ====="
+
+          grep -RniE \
+            'config[[:space:]]+[A-Za-z0-9_]*(MEMK|memk)[A-Za-z0-9_]*' \
+            . \
+            --include='Kconfig*' \
+            || true
+
+          echo
+          echo "===== Searching MemKernel Makefile ====="
+
+          grep -RniE \
+            '(memk|MEMK)' \
+            . \
+            --include='Makefile' \
+            --include='Kbuild' \
+            || true
+
+      # ---------------------------------------------------------
+      # 9. Automatically force MemKernel symbol = m
+      #
+      # Finds a CONFIG symbol related to memk from Kconfig,
+      # then changes it to module mode.
+      # ---------------------------------------------------------
+      - name: Enable MemKernel as module
+        shell: bash
+        run: |
+          set -eux
+
+          SYMBOL="$(
+            grep -RhoE \
+              'config[[:space:]]+[A-Za-z0-9_]*(MEMK|memk)[A-Za-z0-9_]*' \
+              . \
+              --include='Kconfig*' \
+            | awk '{print $2}' \
+            | sort -u \
+            | head -n 1
+          )"
+
+          if [ -z "$SYMBOL" ]; then
+            echo "ERROR: Could not automatically detect MemKernel CONFIG symbol."
+            echo
+            echo "===== Kconfig references ====="
+            grep -RniE '(memk|MEMK)' . \
+              --include='Kconfig*' \
+              --include='Makefile' \
+              --include='Kbuild' \
+              || true
+            exit 1
+          fi
+
+          echo "Detected MemKernel CONFIG symbol: $SYMBOL"
+
+          ./scripts/config \
+            --file out/.config \
+            --module "$SYMBOL"
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            olddefconfig
+
+          echo
+          echo "===== MemKernel CONFIG RESULT ====="
+
+          grep -E \
+            "^${SYMBOL}=" \
+            out/.config
+
+      # ---------------------------------------------------------
+      # 10. Verify final configuration
+      # ---------------------------------------------------------
+      - name: Verify final kernel configuration
+        shell: bash
+        run: |
+          set -eux
+
+          echo "===== FINAL CONFIG ====="
+
+          grep -E \
+            '^CONFIG_(MODULES|MODULE_FORCE_LOAD|MODULE_UNLOAD|MODULE_FORCE_UNLOAD|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL)=' \
+            out/.config \
+            || true
+
+          echo
+          echo "===== ALL CONFIG OPTIONS SET TO m ====="
+
+          grep '=m$' out/.config | head -100 || true
+
+      # ---------------------------------------------------------
+      # 11. Build kernel
+      # ---------------------------------------------------------
+      - name: Build kernel
+        shell: bash
         run: |
           set -eux
 
           export ARCH=arm64
           export SUBARCH=arm64
 
-          export LLVM=1
-          export LLVM_IAS=1
-
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabihf-
-
-          echo "=== Starting kernel build ==="
+          export PATH="/usr/lib/llvm-14/bin:$PATH"
 
           make \
             O=out \
@@ -256,99 +279,119 @@ jobs:
             -j"$(nproc)" \
             2>&1 | tee kernel-build.log
 
-      # ==========================================
-      # 13. Find kernel Image
-      # ==========================================
-      - name: Find built kernel
+      # ---------------------------------------------------------
+      # 12. Explicitly build modules
+      # ---------------------------------------------------------
+      - name: Build kernel modules
+        shell: bash
         run: |
           set -eux
 
-          echo "=== Kernel images ==="
+          make \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            modules \
+            -j"$(nproc)" \
+            2>&1 | tee modules-build.log
 
-          find out/arch/arm64/boot \
-            -type f \
-            \( \
-              -name 'Image' \
-              -o -name 'Image.gz' \
-              -o -name 'Image.gz-dtb' \
-              -o -name 'zImage' \
-              -o -name 'zImage-dtb' \
-            \) \
-            -print || true
-
-      # ==========================================
-      # 14. Find modules
-      # ==========================================
-      - name: Find built modules
+      # ---------------------------------------------------------
+      # 13. Check MODPOST
+      # ---------------------------------------------------------
+      - name: Verify modules
+        shell: bash
         run: |
           set -eux
 
-          echo "=== All .ko modules ==="
+          echo "===== MODPOST ====="
 
-          find out \
-            -type f \
-            -name '*.ko' \
-            -print \
-            | sort || true
-
-          echo
-          echo "=== MemKernel modules ==="
-
-          find out \
-            -type f \
-            \( \
-              -name '*memk*.ko' \
-              -o -name '*memkernel*.ko' \
-            \) \
-            -print \
-            | sort || true
-
-      # ==========================================
-      # 15. Prepare artifacts
-      # ==========================================
-      - name: Prepare build output
-        run: |
-          set -eux
-
-          mkdir -p build_output
-
-          echo "=== Copy kernel images ==="
-
-          find out/arch/arm64/boot \
-            -type f \
-            \( \
-              -name 'Image' \
-              -o -name 'Image.gz' \
-              -o -name 'Image.gz-dtb' \
-              -o -name 'zImage' \
-              -o -name 'zImage-dtb' \
-            \) \
-            -exec cp {} build_output/ \; \
+          grep -E \
+            'MODPOST|Building modules' \
+            modules-build.log \
             || true
 
           echo
-          echo "=== Copy all kernel modules ==="
+          echo "===== KO FILES ====="
 
           find out \
             -type f \
-            -name '*.ko' \
-            -exec cp {} build_output/ \; \
-            || true
+            -name "*.ko" \
+            -print \
+            | sort
+
+          KO_COUNT="$(find out -type f -name '*.ko' | wc -l)"
 
           echo
-          echo "=== Build output ==="
+          echo "KO COUNT: $KO_COUNT"
 
-          ls -lah build_output/
+          if [ "$KO_COUNT" -eq 0 ]; then
+            echo
+            echo "ERROR: No .ko files were generated."
+            echo
+            echo "===== CONFIG MODULES ====="
+            grep '^CONFIG_MODULES=' out/.config || true
+            echo
+            echo "===== CONFIG =m ====="
+            grep '=m$' out/.config | head -100 || true
+            exit 1
+          fi
 
-      # ==========================================
-      # 16. Upload artifacts
-      # ==========================================
-      - name: Upload Kernel and Modules
+      # ---------------------------------------------------------
+      # 14. Collect build output
+      # ---------------------------------------------------------
+      - name: Collect kernel and modules
+        shell: bash
+        run: |
+          set -eux
+
+          rm -rf build_output
+          mkdir -p build_output/modules
+          mkdir -p build_output/kernel
+
+          # Kernel images
+          find out/arch/arm64/boot \
+            -maxdepth 1 \
+            -type f \
+            \( \
+              -name "Image" \
+              -o \
+              -name "Image.gz" \
+              -o \
+              -name "Image.gz-dtb" \
+              -o \
+              -name "Image-dtb" \
+            \) \
+            -exec cp -v {} build_output/kernel/ \;
+
+          # All .ko files
+          find out \
+            -type f \
+            -name "*.ko" \
+            -exec cp -v {} build_output/modules/ \;
+
+          # Config
+          cp out/.config build_output/kernel/config
+
+          # Logs
+          cp kernel-build.log build_output/
+          cp modules-build.log build_output/
+
+          echo
+          echo "===== FINAL ARTIFACTS ====="
+
+          find build_output \
+            -type f \
+            -printf '%p\n' \
+            | sort
+
+      # ---------------------------------------------------------
+      # 15. Upload artifacts
+      # ---------------------------------------------------------
+      - name: Upload Kernel + Modules
         uses: actions/upload-artifact@v4
         with:
-          name: Realme5i-Kernel-Build
-          path: |
-            build_output/**
-            kernel-build.log
-            out/.config
-          if-no-files-found: warn
+          name: Realme5i-Kernel-MemKernel-LKM
+          path: build_output/
+          if-no-files-found: error
+          retention-days: 30
