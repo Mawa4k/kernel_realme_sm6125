@@ -1,4 +1,4 @@
-name: Realme 5i Kernel + MemKernel LKM
+name: Realme 5i Kernel LKM Build
 
 on:
   workflow_dispatch:
@@ -21,14 +21,20 @@ jobs:
       # 2. Configure Git
       # =========================================================
       - name: Configure Git
+        shell: bash
         run: |
+          set -eux
+
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # =========================================================
       # 3. Install build dependencies
       # =========================================================
       - name: Install build dependencies
+        shell: bash
         run: |
+          set -eux
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -37,6 +43,7 @@ jobs:
             build-essential \
             ccache \
             clang \
+            curl \
             flex \
             gcc-aarch64-linux-gnu \
             gcc-arm-linux-gnueabihf \
@@ -57,65 +64,24 @@ jobs:
             zip
 
       # =========================================================
-      # 4. Setup Poko-Apps MemKernel
+      # 4. Show toolchain
       # =========================================================
-      - name: Setup Poko-Apps MemKernel LKM
+      - name: Show toolchain
         shell: bash
         run: |
           set -eux
 
           echo "=========================================="
-          echo "       DOWNLOADING MEMKERNEL"
+          echo "             TOOLCHAIN"
           echo "=========================================="
 
-          curl -fL \
-            "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" \
-            -o memkernel-setup.sh
-
-          chmod +x memkernel-setup.sh
-
-          echo
-          echo "=========================================="
-          echo "       INSTALLING MEMKERNEL AS LKM"
-          echo "=========================================="
-
-          bash memkernel-setup.sh M memk
-
-          echo
-          echo "MemKernel setup completed."
+          clang --version
+          ld.lld --version
+          llvm-as --version
+          aarch64-linux-gnu-gcc --version
 
       # =========================================================
-      # 5. Inspect MemKernel integration
-      # =========================================================
-      - name: Inspect MemKernel integration
-        shell: bash
-        run: |
-          set -eux
-
-          echo "=========================================="
-          echo "       MEMKERNEL KCONFIG REFERENCES"
-          echo "=========================================="
-
-          grep -RniE \
-            '(memk|memkernel)' \
-            . \
-            --include='Kconfig*' \
-            || true
-
-          echo
-          echo "=========================================="
-          echo "       MEMKERNEL MAKEFILE REFERENCES"
-          echo "=========================================="
-
-          grep -RniE \
-            '(memk|memkernel)' \
-            . \
-            --include='Makefile' \
-            --include='Kbuild' \
-            || true
-
-      # =========================================================
-      # 6. Detect r5x defconfig
+      # 5. Detect r5x defconfig
       # =========================================================
       - name: Detect kernel defconfig
         shell: bash
@@ -133,15 +99,18 @@ jobs:
             | sort
 
           if [ -f "arch/arm64/configs/r5x_defconfig" ]; then
+
             DEFCONFIG="r5x_defconfig"
 
           elif [ -f "arch/arm64/configs/vendor/r5x_defconfig" ]; then
+
             DEFCONFIG="vendor/r5x_defconfig"
 
           else
-            echo
+
             echo "ERROR: r5x_defconfig was not found."
             exit 1
+
           fi
 
           echo
@@ -150,7 +119,7 @@ jobs:
           echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
 
       # =========================================================
-      # 7. Generate base kernel configuration
+      # 6. Generate base kernel configuration
       # =========================================================
       - name: Generate kernel configuration
         shell: bash
@@ -159,8 +128,9 @@ jobs:
 
           mkdir -p out
 
-          echo "Using:"
-          echo "$DEFCONFIG"
+          echo "=========================================="
+          echo "       GENERATING KERNEL CONFIG"
+          echo "=========================================="
 
           make \
             O=out \
@@ -168,7 +138,7 @@ jobs:
             "$DEFCONFIG"
 
       # =========================================================
-      # 8. Enable kernel module support
+      # 7. Configure kernel modules
       # =========================================================
       - name: Configure kernel modules
         shell: bash
@@ -206,7 +176,7 @@ jobs:
             olddefconfig
 
       # =========================================================
-      # 9. Verify module configuration
+      # 8. Verify module configuration
       # =========================================================
       - name: Verify module configuration
         shell: bash
@@ -228,8 +198,11 @@ jobs:
           echo "=========================================="
 
           grep -q '^CONFIG_MODULES=y$' out/.config
+
           grep -q '^CONFIG_MODULE_FORCE_LOAD=y$' out/.config
+
           grep -q '^CONFIG_MODULE_UNLOAD=y$' out/.config
+
           grep -q '^CONFIG_MODULE_FORCE_UNLOAD=y$' out/.config
 
           if grep -q '^CONFIG_MODULE_SIG=y$' out/.config; then
@@ -248,136 +221,24 @@ jobs:
           fi
 
           echo
-          echo "=========================================="
-          echo "       MODULE CONFIGURATION OK"
-          echo "=========================================="
+          echo "MODULE CONFIGURATION OK"
 
       # =========================================================
-      # 10. Find MemKernel CONFIG symbol
+      # 9. Show all configured modules
       # =========================================================
-      - name: Detect MemKernel CONFIG symbol
+      - name: Show configured kernel modules
         shell: bash
         run: |
           set -eux
 
           echo "=========================================="
-          echo "       DETECTING MEMKERNEL CONFIG"
+          echo "             CONFIGURED MODULES"
           echo "=========================================="
 
-          SYMBOL="$(
-            grep -RhoE \
-              '^[[:space:]]*config[[:space:]]+[A-Za-z0-9_]*(MEMK|memk)[A-Za-z0-9_]*' \
-              . \
-              --include='Kconfig*' \
-            | sed -E 's/^[[:space:]]*config[[:space:]]+//' \
-            | sort -u \
-            | head -n 1
-          )"
-
-          if [ -z "$SYMBOL" ]; then
-            echo
-            echo "ERROR: MemKernel CONFIG symbol could not be detected."
-
-            echo
-            echo "===== MemKernel references ====="
-
-            grep -RniE \
-              '(memk|memkernel)' \
-              . \
-              --include='Kconfig*' \
-              --include='Makefile' \
-              --include='Kbuild' \
-              || true
-
-            exit 1
-          fi
-
-          echo
-          echo "Detected MemKernel symbol:"
-          echo "$SYMBOL"
-
-          echo "MEMK_SYMBOL=$SYMBOL" >> "$GITHUB_ENV"
+          grep '=m$' out/.config || true
 
       # =========================================================
-      # 11. Force MemKernel =m
-      # =========================================================
-      - name: Configure MemKernel as module
-        shell: bash
-        run: |
-          set -eux
-
-          echo "=========================================="
-          echo "       CONFIGURING MEMKERNEL AS LKM"
-          echo "=========================================="
-
-          echo "MemKernel symbol:"
-          echo "$MEMK_SYMBOL"
-
-          ./scripts/config \
-            --file out/.config \
-            --module "$MEMK_SYMBOL"
-
-          make \
-            O=out \
-            ARCH=arm64 \
-            olddefconfig
-
-          echo
-          echo "MemKernel final configuration:"
-
-          grep \
-            "^${MEMK_SYMBOL}=" \
-            out/.config
-
-      # =========================================================
-      # 12. Verify MemKernel =m
-      # =========================================================
-      - name: Verify MemKernel LKM configuration
-        shell: bash
-        run: |
-          set -eux
-
-          echo "=========================================="
-          echo "       VERIFYING MEMKERNEL LKM"
-          echo "=========================================="
-
-          if ! grep -q "^${MEMK_SYMBOL}=m$" out/.config; then
-
-            echo
-            echo "ERROR: MemKernel is NOT configured as =m"
-
-            echo
-            echo "Current value:"
-
-            grep \
-              "^${MEMK_SYMBOL}=" \
-              out/.config \
-              || true
-
-            exit 1
-          fi
-
-          echo
-          echo "SUCCESS:"
-          echo "${MEMK_SYMBOL}=m"
-
-      # =========================================================
-      # 13. Show all modules
-      # =========================================================
-      - name: Show enabled kernel modules
-        shell: bash
-        run: |
-          set -eux
-
-          echo "=========================================="
-          echo "       CONFIGURED MODULES"
-          echo "=========================================="
-
-          grep '=m$' out/.config \
-            || true
-
-      # =========================================================
-      # 14. Build Android kernel
+      # 10. Build Android kernel
       # =========================================================
       - name: Build Android kernel
         shell: bash
@@ -400,7 +261,7 @@ jobs:
             2>&1 | tee kernel-build.log
 
       # =========================================================
-      # 15. Build modules
+      # 11. Build kernel modules
       # =========================================================
       - name: Build kernel modules
         shell: bash
@@ -421,7 +282,33 @@ jobs:
             2>&1 | tee modules-build.log
 
       # =========================================================
-      # 16. Verify .ko files
+      # 12. Verify kernel image
+      # =========================================================
+      - name: Verify kernel image
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=========================================="
+          echo "             KERNEL OUTPUT"
+          echo "=========================================="
+
+          find out/arch/arm64/boot \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | sort
+
+          if [ ! -f "out/arch/arm64/boot/Image" ]; then
+            echo "ERROR: Image was not generated."
+            exit 1
+          fi
+
+          echo
+          echo "Kernel Image exists."
+
+      # =========================================================
+      # 13. Verify generated .ko files
       # =========================================================
       - name: Verify generated KO modules
         shell: bash
@@ -429,7 +316,7 @@ jobs:
           set -eux
 
           echo "=========================================="
-          echo "                MODPOST"
+          echo "              MODPOST"
           echo "=========================================="
 
           grep -E \
@@ -440,7 +327,7 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "             GENERATED .KO FILES"
+          echo "          GENERATED .KO FILES"
           echo "=========================================="
 
           find out \
@@ -462,19 +349,13 @@ jobs:
             echo "=========================================="
 
             echo
-            echo "MemKernel CONFIG:"
-            grep \
-              "^${MEMK_SYMBOL}=" \
-              out/.config \
-              || true
+            echo "Configured modules:"
 
-            echo
-            echo "All =m CONFIGS:"
-            grep '=m$' out/.config \
-              || true
+            grep '=m$' out/.config || true
 
             echo
             echo "MODPOST output:"
+
             grep -E \
               'MODPOST|ERROR|warning' \
               kernel-build.log \
@@ -482,6 +363,7 @@ jobs:
               || true
 
             exit 1
+
           fi
 
           echo
@@ -490,7 +372,7 @@ jobs:
           echo "=========================================="
 
       # =========================================================
-      # 17. Show module information
+      # 14. Show module information
       # =========================================================
       - name: Show module information
         shell: bash
@@ -516,10 +398,10 @@ jobs:
 
               modinfo "$KO" || true
 
-          done
+            done
 
       # =========================================================
-      # 18. Collect kernel and modules
+      # 15. Collect kernel and modules
       # =========================================================
       - name: Collect build artifacts
         shell: bash
@@ -541,12 +423,9 @@ jobs:
             -type f \
             \( \
               -name "Image" \
-              -o \
-              -name "Image.gz" \
-              -o \
-              -name "Image.gz-dtb" \
-              -o \
-              -name "Image-dtb" \
+              -o -name "Image.gz" \
+              -o -name "Image.gz-dtb" \
+              -o -name "Image-dtb" \
             \) \
             -exec cp -v {} build_output/kernel/ \;
 
@@ -593,12 +472,12 @@ jobs:
             | sort
 
       # =========================================================
-      # 19. Upload artifacts
+      # 16. Upload artifacts
       # =========================================================
-      - name: Upload Kernel and MemKernel LKM
+      - name: Upload Kernel and LKM artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Realme5i-Kernel-MemKernel-LKM
+          name: Realme5i-Kernel-LKM
           path: build_output/
           if-no-files-found: error
           retention-days: 30
