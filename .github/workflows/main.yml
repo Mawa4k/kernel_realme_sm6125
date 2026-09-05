@@ -1,4 +1,3 @@
-```yaml
 name: Kernel Build
 
 on:
@@ -34,12 +33,14 @@ jobs:
       - name: Check MemKernel setup
         run: |
           echo "=== Searching MemKernel files ==="
+
           find . -type f \( \
             -name "memkernel.ko" -o \
             -name "*memkernel*.ko" \
           \) -print || true
 
           echo "=== MemKernel directories ==="
+
           find . -type d -iname "*memkernel*" -print || true
 
       - name: Android kernel build
@@ -69,4 +70,3 @@ jobs:
             ${{ steps.build.outputs.outfile }}
             ./out/drivers/memkernel/memkernel.ko
           if-no-files-found: warn
-```
