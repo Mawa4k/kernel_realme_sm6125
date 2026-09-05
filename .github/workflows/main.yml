@@ -1,4 +1,3 @@
-```yaml
 name: Realme 5i Kernel + MemKernel LKM
 
 on:
@@ -603,4 +602,3 @@ jobs:
           path: build_output/
           if-no-files-found: error
           retention-days: 30
-```
